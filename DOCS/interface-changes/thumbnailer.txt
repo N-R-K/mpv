@@ -1,0 +1,1 @@
+add "thumbnailer" api for UI scripts and thumbnailer scripts to communicate
