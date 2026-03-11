@@ -35,6 +35,7 @@ local user_opts = {
     seekrangeseparate = true,   -- whether the seekranges overlay on the bar-style seekbar
     seekrangealpha = 200,       -- transparency of seekranges
     seekbarkeyframes = true,    -- use keyframes when dragging the seekbar
+    seekonhover = true,         -- seek on mouse hover over the seekbar
     scrollcontrols = true,      -- allow scrolling when hovering certain OSC elements
     title = "${!playlist-count==1:[${playlist-pos-1}/${playlist-count}] }${media-title}",
                                 -- to be shown as OSC title
@@ -2119,9 +2120,9 @@ local function osc_init()
         end
         return nranges
     end
-    ne.eventresponder["mouse_move"] = --keyframe seeking when mouse is dragged
+    ne.eventresponder["mouse_move"] = --keyframe seeking when mouse is dragged or hovered
         function (element)
-            if not element.state.mbtn_left then
+            if not element.state.mbtn_left and not user_opts.seekonhover then
                 return
             end
 
@@ -2468,6 +2469,14 @@ local function process_event(source, what)
         local n = state.active_element
         if element_has_action(elements[n], action) then
             elements[n].eventresponder[action](elements[n])
+        elseif n == nil then
+            for i = 1, #elements do
+                if mouse_hit(elements[i]) and
+                    element_has_action(elements[i], action) then
+                    elements[i].eventresponder[action](elements[i])
+                    break
+                end
+            end
         end
     end
 
