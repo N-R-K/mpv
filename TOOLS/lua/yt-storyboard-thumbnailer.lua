@@ -447,7 +447,7 @@ mp.observe_property("user-data/mpv/ytdl/json-subprocess-result", "native",
         end
 
         local url  = json.webpage_url or json.original_url
-        local ytdl = mp.get_property("user-data/mpv/ytdl/path")
+        local ytdl = mp.get_property_native("user-data/mpv/ytdl/path")
         if not url or not ytdl or ytdl == "" then return end
 
         -- Bump the generation NOW (before file-loaded fires) so that the
@@ -459,12 +459,12 @@ mp.observe_property("user-data/mpv/ytdl/json-subprocess-result", "native",
         local mhtml_path = utils.join_path(get_tmpdir(),
             "storyboard_" .. gen .. ".mhtml")
 
-        msg.verbose("Downloading YouTube storyboard for: " .. url)
+        local args = {ytdl, "--no-warnings", "-f", "sb0", "-o", mhtml_path, "--", url}
+        msg.verbose("Downloading YouTube storyboard for: " .. url .. " => " .. utils.format_json(args))
 
         mp.command_native_async({
             name          = "subprocess",
-            args          = {ytdl, "--no-warnings",
-                             "-f", "sb0", "-o", mhtml_path, "--", url},
+            args          = args,
             capture_stderr = true,
             playback_only  = false,
         }, function(success, dl_result)
