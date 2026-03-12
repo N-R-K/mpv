@@ -375,7 +375,7 @@ end
 mp.observe_property("user-data/osc/thumbnailer", "native", function(_, req)
     if req == nil then
         pending_req = nil
-        mp.commandv("overlay-remove", OVERLAY_ID)
+        mp.command_native({"overlay-remove", OVERLAY_ID})
         return
     end
     if not sb then return end
