@@ -22,7 +22,7 @@ local utils = require 'mp.utils'
 
 -- Overlay ID used for displaying thumbnails. Change this if it conflicts with
 -- another script.
-local OVERLAY_ID = 1
+local OVERLAY_ID = 16
 
 -- Per-session temp directory (created lazily on first YouTube video).
 local tmpdir = nil
