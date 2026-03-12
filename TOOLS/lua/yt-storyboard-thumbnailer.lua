@@ -37,6 +37,10 @@ local generation = 0
 -- Whether a thumbnail extraction (ffmpeg) is currently in progress.
 local extracting = false
 
+-- Set to false when the OSC sends a nil (clear) request; prevents an
+-- in-flight ffmpeg callback from re-adding the overlay after it was removed.
+local overlay_enabled = false
+
 -- The latest unprocessed thumbnail request. Only the most recent one is kept.
 local pending_req = nil
 
@@ -339,6 +343,8 @@ local function do_show_thumbnail(req)
         extracting = false
         -- Discard if the user has moved to a different file while ffmpeg ran.
         if my_gen ~= generation then return end
+        -- Discard if the OSC has cleared the thumbnail request in the meantime.
+        if not overlay_enabled then return end
 
         if success and result.status == 0 then
             mp.command_native({
@@ -376,12 +382,14 @@ end
 -- Respond to thumbnail requests from the OSC.
 mp.observe_property("user-data/osc/thumbnailer", "native", function(_, req)
     if req == nil then
+        overlay_enabled = false
         pending_req = nil
         mp.command_native({"overlay-remove", OVERLAY_ID})
         return
     end
     if not sb then return end
 
+    overlay_enabled = true
     if extracting then
         pending_req = req   -- drop the previous pending request
     else
@@ -467,10 +475,11 @@ mp.observe_property("user-data/mpv/ytdl/json-subprocess-result", "native",
 -- New file: bump the generation counter and clear stale storyboard state.
 -- The overlay is cleared by the OSC via a nil thumbnailer request.
 mp.register_event("start-file", function()
-    generation  = generation + 1
-    sb          = nil
-    pending_req = nil
-    extracting  = false
+    generation      = generation + 1
+    sb              = nil
+    pending_req     = nil
+    extracting      = false
+    overlay_enabled = false
 end)
 
 -- On exit, remove the temporary directory with all cached sprites.
