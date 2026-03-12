@@ -59,7 +59,7 @@ local function get_tmpdir()
         base = os.getenv("TMPDIR") or os.getenv("TMP") or os.getenv("TEMP") or "/tmp"
     end
     if not base then base = "/tmp" end
-    tmpdir = utils.join_path(base, "mpv-yt-thumb-" .. tostring(mp.utils.getpid()))
+    tmpdir = utils.join_path(base, "mpv-yt-thumb-" .. tostring(utils.getpid()))
     if mp.get_property_native("platform") == "windows" then
         mp.command_native({
             name          = "subprocess",
