@@ -722,3 +722,6 @@ script via the following ``user-data`` properties:
 
     The OSC sets this property to ``nil`` to signal the thumbnailer to clear
     the displayed thumbnail.
+
+The script ``TOOLS/lua/yt-thumbnailer.lua`` implements this API to show
+pregenerated preview images that are available on certain sites (e.g youtube).
