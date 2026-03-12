@@ -352,6 +352,8 @@ local function do_show_thumbnail(req)
                 w      = out_w,
                 h      = out_h,
                 stride = out_w * 4,
+                dw     = req.w,
+                dh     = req.h,
             })
         else
             msg.debug("ffmpeg thumbnail extraction failed")
