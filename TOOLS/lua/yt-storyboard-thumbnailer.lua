@@ -47,38 +47,6 @@ mp.set_property_native("user-data/thumbnailer/enabled", true)
 -- Helpers
 -- ---------------------------------------------------------------------------
 
--- Build a base64 decode lookup table once at load time.
-local b64chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
-local b64tbl = {}
-for i = 1, #b64chars do
-    b64tbl[b64chars:sub(i, i)] = i - 1
-end
-
--- Decode a base64-encoded string to raw bytes.
-local function base64_decode(data)
-    -- Strip whitespace and characters not in the base64 alphabet.
-    data = data:gsub("[^" .. b64chars .. "=]", "")
-    local result = {}
-    local i = 1
-    while i <= #data do
-        local a  = b64tbl[data:sub(i,     i    )] or 0
-        local b  = b64tbl[data:sub(i + 1, i + 1)] or 0
-        local c  = data:sub(i + 2, i + 2)
-        local d  = data:sub(i + 3, i + 3)
-        local cv = c ~= "=" and (b64tbl[c] or 0) or nil
-        local dv = d ~= "=" and (b64tbl[d] or 0) or nil
-        result[#result + 1] = string.char(a * 4 + math.floor(b / 16))
-        if cv then
-            result[#result + 1] = string.char((b % 16) * 16 + math.floor(cv / 4))
-        end
-        if dv then
-            result[#result + 1] = string.char(((cv or 0) % 4) * 64 + dv)
-        end
-        i = i + 4
-    end
-    return table.concat(result)
-end
-
 -- Return (and create on first call) the per-session temp directory.
 local function get_tmpdir()
     if tmpdir then return tmpdir end
@@ -114,6 +82,13 @@ end
 -- as a separate file.  Files are named sprite_<gen>_<n>.<ext> so that
 -- concurrent downloads for different files do not collide.
 -- Returns the number of sprite images saved.
+--
+-- yt-dlp produces a non-standard MHTML:
+--   * No "Content-Type: multipart/related; boundary=..." outer header.
+--     The boundary is the first "--<boundary>" line in the preamble.
+--   * Each part body is raw binary with a "Content-length" header.
+--     We must use that length to read the image and never search for the
+--     boundary inside binary data.
 local function parse_mhtml(mhtml_path, gen)
     local f = io.open(mhtml_path, "rb")
     if not f then
@@ -123,11 +98,21 @@ local function parse_mhtml(mhtml_path, gen)
     local data = f:read("*a")
     f:close()
 
-    -- Locate the multipart boundary declared in the Content-Type header.
+    -- Locate the boundary.
+    -- First try the standard MIME multipart Content-Type header.
     local boundary = data:match('Content%-Type:%s*multipart/related[^\r\n]*boundary="([^"]+)"')
     if not boundary then
-        -- Some implementations omit the quotes around the boundary value.
         boundary = data:match("Content%-Type:%s*multipart/related[^\r\n]*boundary=([%w%+%-%._=]+)")
+    end
+    -- yt-dlp omits that header entirely; scan the preamble for the first
+    -- "--<boundary>" line (preamble is plain text, so this is safe).
+    if not boundary then
+        for line in data:sub(1, 512):gmatch("[^\r\n]+") do
+            if line:sub(1, 2) == "--" and #line > 2 then
+                boundary = line:sub(3):match("^(.-)%s*$")  -- strip trailing whitespace
+                break
+            end
+        end
     end
     if not boundary then
         msg.error("Cannot find MIME boundary in storyboard mhtml")
@@ -144,66 +129,62 @@ local function parse_mhtml(mhtml_path, gen)
         if not s then break end
 
         local after = s + #sep
-        if data:sub(after, after + 1) == "--" then break end  -- end boundary
 
-        -- Skip the CRLF (or plain LF) that follows the boundary line.
-        local part_start = after
-        if data:sub(part_start, part_start) == "\r" then
-            part_start = part_start + 1
-        end
-        if data:sub(part_start, part_start) == "\n" then
-            part_start = part_start + 1
-        end
+        -- "--boundary--" signals the end of the multipart body.
+        if data:sub(after, after + 1) == "--" then break end
 
-        local next_s = data:find(sep, part_start, true)
-        if not next_s then break end
+        -- Skip the CRLF (or plain LF) after the boundary line.
+        if data:sub(after, after) == "\r" then after = after + 1 end
+        if data:sub(after, after) == "\n" then after = after + 1 end
 
-        local part = data:sub(part_start, next_s - 1)
-
-        -- Locate the blank line that separates headers from body.
-        local hdr_end, body_start
-        hdr_end = part:find("\r\n\r\n")
-        if hdr_end then
-            body_start = hdr_end + 4
-        else
-            hdr_end = part:find("\n\n")
-            if hdr_end then body_start = hdr_end + 2 end
-        end
-
-        if hdr_end then
-            local headers = part:sub(1, hdr_end - 1)
-            local body    = part:sub(body_start)
-
-            local ct  = headers:match("Content%-Type:%s*([^\r\n]+)")
-            local enc = headers:match("Content%-Transfer%-Encoding:%s*([^\r\n]+)")
-
-            if ct and ct:lower():match("^image/") then
-                count = count + 1
-                local ext = ct:lower():match("^image/(%w+)") or "jpg"
-                if ext == "jpeg" then ext = "jpg" end
-
-                local sprite_path = utils.join_path(
-                    dir, "sprite_" .. gen .. "_" .. count .. "." .. ext)
-
-                local img_data
-                if enc and enc:lower():match("base64") then
-                    img_data = base64_decode(body)
-                else
-                    -- Binary transfer encoding: strip the trailing blank line.
-                    img_data = body:gsub("\r?\n$", "")
-                end
-
-                local out = io.open(sprite_path, "wb")
-                if out then
-                    out:write(img_data)
-                    out:close()
-                else
-                    msg.warn("Could not write sprite: " .. sprite_path)
+        -- Parse headers line by line until the blank line.
+        local ct, cl
+        local hpos = after
+        while true do
+            local line_end = data:find("\n", hpos, true)
+            if not line_end then break end
+            local line = data:sub(hpos, line_end - 1):gsub("\r$", "")
+            if line == "" then
+                hpos = line_end + 1
+                break
+            end
+            local hname, hval = line:match("^([^:]+):%s*(.*)")
+            if hname then
+                local lname = hname:lower()
+                if lname == "content-type" then
+                    ct = hval:match("^%s*(.-)%s*$")
+                elseif lname == "content-length" then
+                    cl = tonumber(hval)
                 end
             end
+            hpos = line_end + 1
         end
 
-        pos = next_s
+        if ct and ct:lower():match("^image/") and cl and cl > 0 then
+            count = count + 1
+            local ext = ct:lower():match("^image/(%w+)") or "webp"
+            if ext == "jpeg" then ext = "jpg" end
+
+            local sprite_path = utils.join_path(
+                dir, "sprite_" .. gen .. "_" .. count .. "." .. ext)
+
+            -- Read exactly cl bytes of raw binary image data.
+            local img_data = data:sub(hpos, hpos + cl - 1)
+
+            local out = io.open(sprite_path, "wb")
+            if out then
+                out:write(img_data)
+                out:close()
+            else
+                msg.warn("Could not write sprite: " .. sprite_path)
+            end
+
+            -- Jump directly past the image data so the next boundary search
+            -- never scans inside binary content.
+            pos = hpos + cl
+        else
+            pos = after
+        end
     end
 
     return count
@@ -459,12 +440,11 @@ mp.observe_property("user-data/mpv/ytdl/json-subprocess-result", "native",
         local mhtml_path = utils.join_path(get_tmpdir(),
             "storyboard_" .. gen .. ".mhtml")
 
-        local args = {ytdl, "--no-warnings", "-f", "sb0", "-o", mhtml_path, "--", url}
-        msg.verbose("Downloading YouTube storyboard for: " .. url .. " => " .. utils.format_json(args))
+        msg.verbose("Downloading YouTube storyboard for: " .. url)
 
         mp.command_native_async({
             name          = "subprocess",
-            args          = args,
+            args          = {ytdl, "--no-warnings", "-f", "sb0", "-o", mhtml_path, "--", url},
             capture_stderr = true,
             playback_only  = false,
         }, function(success, dl_result)
