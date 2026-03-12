@@ -4,8 +4,8 @@ YouTube Storyboard Thumbnailer
 Implements the OSC thumbnailer API for YouTube storyboards via yt-dlp/youtube-dl.
 
 When playing a YouTube video, this script automatically downloads the storyboard
-(yt-dlp format "sb0", 180p MHTML) and displays thumbnails when hovering over
-the OSC seekbar.
+(yt-dlp format "sb0" 180p preferred, "sb1" 90p fallback) and displays thumbnails
+when hovering over the OSC seekbar.
 
 Requirements:
   - yt-dlp or youtube-dl (loaded via ytdl_hook.lua)
@@ -48,6 +48,8 @@ mp.set_property_native("user-data/thumbnailer/enabled", true)
 -- ---------------------------------------------------------------------------
 
 -- Return (and create on first call) the per-session temp directory.
+-- The directory name includes mpv's PID so parallel mpv instances do not
+-- interfere with each other.
 local function get_tmpdir()
     if tmpdir then return tmpdir end
     local base
@@ -57,7 +59,7 @@ local function get_tmpdir()
         base = os.getenv("TMPDIR") or os.getenv("TMP") or os.getenv("TEMP") or "/tmp"
     end
     if not base then base = "/tmp" end
-    tmpdir = utils.join_path(base, "mpv-yt-thumb-" .. tostring(os.time()))
+    tmpdir = utils.join_path(base, "mpv-yt-thumb-" .. tostring(mp.utils.getpid()))
     if mp.get_property_native("platform") == "windows" then
         mp.command_native({
             name          = "subprocess",
@@ -196,19 +198,19 @@ end
 
 -- Build the storyboard state table from the yt-dlp JSON and the number of
 -- sprite images that were successfully extracted.
-local function setup_storyboard(json, num_sprites, gen)
+local function setup_storyboard(json, fmt_id, num_sprites, gen)
     if num_sprites == 0 then return end
 
-    -- Locate the sb0 format entry.
-    local sb0 = nil
+    -- Locate the chosen format entry.
+    local sb_fmt = nil
     for _, fmt in ipairs(json.formats or {}) do
-        if fmt.format_id == "sb0" then
-            sb0 = fmt
+        if fmt.format_id == fmt_id then
+            sb_fmt = fmt
             break
         end
     end
-    if not sb0 then
-        msg.warn("sb0 format entry not found in JSON")
+    if not sb_fmt then
+        msg.warn(fmt_id .. " format entry not found in JSON")
         return
     end
 
@@ -217,15 +219,15 @@ local function setup_storyboard(json, num_sprites, gen)
     -- sprite i begins.
     local frag_start_times = {}
     local t = 0
-    for i, frag in ipairs(sb0.fragments or {}) do
+    for i, frag in ipairs(sb_fmt.fragments or {}) do
         frag_start_times[i] = t
         t = t + (frag.duration or 0)
     end
 
-    local rows = sb0.rows    or 5
-    local cols = sb0.columns or 5
-    local tw   = sb0.width   or 48
-    local th   = sb0.height  or 27
+    local rows = sb_fmt.rows    or 5
+    local cols = sb_fmt.columns or 5
+    local tw   = sb_fmt.width   or 48
+    local th   = sb_fmt.height  or 27
 
     sb = {
         rows             = rows,
@@ -241,14 +243,6 @@ local function setup_storyboard(json, num_sprites, gen)
     msg.verbose(string.format(
         "Storyboard ready: %d sprite(s), %dx%d grid, %dx%d px/thumb",
         num_sprites, cols, rows, tw, th))
-end
-
--- Clear all storyboard state and remove the overlay.
-local function reset()
-    sb          = nil
-    pending_req = nil
-    extracting  = false
-    mp.commandv("overlay-remove", OVERLAY_ID)
 end
 
 -- ---------------------------------------------------------------------------
@@ -414,16 +408,18 @@ mp.observe_property("user-data/mpv/ytdl/json-subprocess-result", "native",
         local extractor = (json.extractor_key or json.extractor or ""):lower()
         if not extractor:match("youtube") then return end
 
-        -- Confirm that a storyboard format is actually available.
-        local has_sb0 = false
+        -- Find preferred storyboard format: sb0 (180p) preferred, sb1 (90p) fallback.
+        local sb_fmt_id = nil
         for _, fmt in ipairs(json.formats or {}) do
             if fmt.format_id == "sb0" then
-                has_sb0 = true
+                sb_fmt_id = "sb0"
                 break
+            elseif fmt.format_id == "sb1" then
+                sb_fmt_id = "sb1"
             end
         end
-        if not has_sb0 then
-            msg.verbose("No sb0 storyboard available for this video")
+        if not sb_fmt_id then
+            msg.verbose("No storyboard format available for this video")
             return
         end
 
@@ -431,20 +427,15 @@ mp.observe_property("user-data/mpv/ytdl/json-subprocess-result", "native",
         local ytdl = mp.get_property_native("user-data/mpv/ytdl/path")
         if not url or not ytdl or ytdl == "" then return end
 
-        -- Bump the generation NOW (before file-loaded fires) so that the
-        -- download callback can verify we are still on the same file.
-        -- file-loaded must not alter generation to avoid invalidating the
-        -- in-flight download.
-        generation = generation + 1
         local gen        = generation
         local mhtml_path = utils.join_path(get_tmpdir(),
             "storyboard_" .. gen .. ".mhtml")
 
-        msg.verbose("Downloading YouTube storyboard for: " .. url)
+        msg.verbose("Downloading YouTube storyboard (" .. sb_fmt_id .. ") for: " .. url)
 
         mp.command_native_async({
             name          = "subprocess",
-            args          = {ytdl, "--no-warnings", "-f", "sb0", "-o", mhtml_path, "--", url},
+            args          = {ytdl, "--no-warnings", "-f", sb_fmt_id, "-o", mhtml_path, "--", url},
             capture_stderr = true,
             playback_only  = false,
         }, function(success, dl_result)
@@ -463,7 +454,7 @@ mp.observe_property("user-data/mpv/ytdl/json-subprocess-result", "native",
                 return
             end
 
-            setup_storyboard(json, num_sprites, gen)
+            setup_storyboard(json, sb_fmt_id, num_sprites, gen)
         end)
     end)
 
@@ -471,15 +462,31 @@ mp.observe_property("user-data/mpv/ytdl/json-subprocess-result", "native",
 -- Event handlers
 -- ---------------------------------------------------------------------------
 
--- New file: reset the storyboard state.  We do NOT bump generation here
--- because generation is bumped inside the ytdl JSON observer (which fires
--- during the on_load hook, before file-loaded).  Bumping it here would
--- invalidate the in-flight storyboard download for the current file.
-mp.register_event("file-loaded", function()
-    reset()
+-- New file: bump the generation counter and clear stale storyboard state.
+-- The overlay is cleared by the OSC via a nil thumbnailer request.
+mp.register_event("start-file", function()
+    generation  = generation + 1
+    sb          = nil
+    pending_req = nil
+    extracting  = false
 end)
 
--- File ended: remove the overlay.
-mp.register_event("end-file", function()
-    reset()
+-- On exit, remove the temporary directory with all cached sprites.
+mp.register_event("shutdown", function()
+    if not tmpdir then return end
+    -- Sanity-check that the path looks like our own temp dir before deleting.
+    if not tmpdir:find("mpv-yt-thumb-", 1, true) then return end
+    if mp.get_property_native("platform") == "windows" then
+        mp.command_native({
+            name          = "subprocess",
+            args          = {"cmd", "/c", "rmdir", "/s", "/q", tmpdir},
+            playback_only = false,
+        })
+    else
+        mp.command_native({
+            name          = "subprocess",
+            args          = {"rm", "-rf", "--", tmpdir},
+            playback_only = false,
+        })
+    end
 end)
