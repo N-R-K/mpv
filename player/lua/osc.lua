@@ -194,7 +194,7 @@ local layouts = {}
 local is_december = os.date("*t").month == 12
 local UNICODE_MINUS = string.char(0xe2, 0x88, 0x92)  -- UTF-8 for U+2212 MINUS SIGN
 local last_custom_button = 0
-local thumbnailer = { enabled = false }
+local thumbnailer = { enabled = false, w = 0, h = 0 }
 local video_out_params = {}
 
 local function osc_color_convert(color)
@@ -1108,18 +1108,12 @@ local function render_elements(master_ass)
                     -- thumbnail
                     local isPositive = function(arg) return arg and arg > 0 end
                     local osd_w, osd_h = mp.get_osd_size()
-                    local vop = video_out_params
                     local draw_thumbnail = thumbnailer.enabled and isPositive(osd_w) and
-                                           isPositive(vop.dw) and isPositive(vop.dh)
+                                           thumbnailer.w > 0 and thumbnailer.h > 0
                     if draw_thumbnail then
                         local r_w, r_h = get_virt_scale_factor()
-                        -- TODO: make (max) w/h configurable
-                        local max_thumb_size = math.floor(math.max(osd_w, osd_h) * 0.15 + 0.5)
-                        max_thumb_size = math.min(math.max(max_thumb_size, 32), 256)
-                        local thumb_w = math.min(vop.dw > vop.dh and max_thumb_size or math.huge,
-                            math.floor(vop.dw / vop.dh * max_thumb_size + 0.5))
-                        local thumb_h = math.min(vop.dw > vop.dh and math.huge or max_thumb_size,
-                            math.floor(vop.dh / vop.dw * max_thumb_size + 0.5))
+                        local thumb_w = thumbnailer.w
+                        local thumb_h = thumbnailer.h
                         local tooltip_font_size = (user_opts.layout == "box" or
                             user_opts.layout == "slimbox") and 2 or 12
                         local thumb_ty = user_opts.layout ~= "topbar" and element.hitbox.y1 - 8 or
@@ -1133,6 +1127,16 @@ local function render_elements(master_ass)
                         local thumb_y = thumb_ty / r_h + (user_opts.layout ~= "topbar" and
                             -(thumb_h + tooltip_font_size / r_h + thumb_margin_y) or
                             thumb_margin_y)
+
+                        elem_ass:new_event()
+                        elem_ass:pos(thumb_x * r_w, thumb_y * r_h)
+                        elem_ass:an(7)
+                        elem_ass:append(osc_styles.timePosBar)
+                        elem_ass:append("{\\1a&H20&}")
+                        elem_ass:draw_start()
+                        elem_ass:rect_cw(-thumb_pad * r_w, -thumb_pad * r_h,
+                            (thumb_w + thumb_pad) * r_w, (thumb_h + thumb_pad) * r_h)
+                        elem_ass:draw_stop()
 
                         mp.set_property_native("user-data/osc/thumbnailer", {
                             hover_sec = mp.get_property_number("duration", 0) * (sliderpos / 100),
@@ -2825,7 +2829,21 @@ mp.observe_property("chapter-list", "native", function(_, list)
     request_init()
 end)
 mp.observe_property('video-out-params', 'native', function(_, data)
-    video_out_params = data or {}
+    if data == nil then
+        thumbnailer.w = 0
+        thumbnailer.h = 0
+        return
+    end
+    local vop = data
+    -- TODO: make (max) w/h configurable
+    -- FIXME: update on osd size change too
+    local osd_w, osd_h = mp.get_osd_size()
+    local max_thumb_size = math.floor(math.max(osd_w, osd_h) * 0.15 + 0.5)
+        max_thumb_size = math.min(math.max(max_thumb_size, 32), 256)
+    thumbnailer.w = math.min(vop.dw > vop.dh and max_thumb_size or math.huge,
+        math.floor(vop.dw / vop.dh * max_thumb_size + 0.5))
+    thumbnailer.h = math.min(vop.dw > vop.dh and math.huge or max_thumb_size,
+        math.floor(vop.dh / vop.dw * max_thumb_size + 0.5))
 end)
 mp.observe_property('user-data/thumbnailer/enabled', 'native', function(_, data)
     thumbnailer.enabled = data or false

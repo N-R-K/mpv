@@ -48,6 +48,7 @@ local state = {
     fetching = {},
     thumb_cache = {},
     thumb_lru = {},
+    drawing = {},
 }
 
 local thumb_show, fetch_sprite, extract_thumb -- "forward declare"
@@ -261,7 +262,7 @@ thumb_show = function()
         end
     end
     if sprite_idx == 0 then
-        mp.command_native({"overlay-remove", opt.overlay_id})
+        -- mp.command_native({"overlay-remove", opt.overlay_id})
         return
     end
 
@@ -276,10 +277,17 @@ thumb_show = function()
         thumb_path = extract_thumb(sprite_path, sprite_idx, thumb_idx, req)
     end
     if thumb_path == nil then
-        mp.command_native({"overlay-remove", opt.overlay_id})
+        -- mp.command_native({"overlay-remove", opt.overlay_id})
         return
     end
 
+    local drawing = { thumb_path, req.x, req.y, req.w, req.h }
+    if utils.to_string(state.drawing) == utils.to_string(drawing) then
+        msg.debug("Ignoring redundant draw request")
+        return
+    end
+
+    state.drawing = drawing
     mp.command_native({
         name   = "overlay-add",
         id     = opt.overlay_id,
